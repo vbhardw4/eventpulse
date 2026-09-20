@@ -50,7 +50,7 @@ spring:
         specific.avro.reader: true
     listener:
       ack-mode: manual_immediate
-      concurrency: 3
+      concurrency: 6
 
 management:
   endpoints:

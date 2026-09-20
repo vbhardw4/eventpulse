@@ -115,14 +115,16 @@ public class OrderSimulator {
 
     /** High-rate burst with pacing, used by the load test. */
     public void burst(long total, int ratePerSecond) {
-        int chunk = Math.max(1, ratePerSecond / 10);
+        // Fewer, bigger transactions: the commit (acks=all, RF=3) is the
+        // fixed cost, so 5 txns/sec of rate/5 events beats 10 txns/sec of rate/10.
+        int chunk = Math.max(1, ratePerSecond / 5);
         long sent = 0;
         long nextTick = System.nanoTime();
         while (sent < total) {
             int n = (int) Math.min(chunk, total - sent);
             produceBatch(n);
             sent += n;
-            nextTick += 100_000_000L;
+            nextTick += 200_000_000L; // 5 chunks/sec
             long sleepNanos = nextTick - System.nanoTime();
             if (sleepNanos > 0) {
                 try {

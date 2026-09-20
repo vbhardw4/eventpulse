@@ -153,7 +153,7 @@ public class KafkaConfig {
         factory.setConsumerFactory(orderConsumerFactory);
         factory.setBatchListener(true);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
-        factory.setConcurrency(3);
+        factory.setConcurrency(6);
 
         var errorHandler = new DefaultErrorHandler(dlqRecoverer, new FixedBackOff(1_000L, 2L));
         errorHandler.addNotRetryableExceptions(
