@@ -15,7 +15,7 @@ services:
     container_name: eventpulse-kafka-1
     hostname: kafka-1
     environment:
-      CLUSTER_ID: eventpulse-kraft-cluster
+      CLUSTER_ID: aa7a92e9-fa4f-4669-b729-56c25a1c1d18
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:29093,2@kafka-2:29093,3@kafka-3:29093
@@ -46,7 +46,7 @@ services:
     container_name: eventpulse-kafka-2
     hostname: kafka-2
     environment:
-      CLUSTER_ID: eventpulse-kraft-cluster
+      CLUSTER_ID: aa7a92e9-fa4f-4669-b729-56c25a1c1d18
       KAFKA_NODE_ID: 2
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:29093,2@kafka-2:29093,3@kafka-3:29093
@@ -72,15 +72,19 @@ services:
       timeout: 5s
       retries: 12
     depends_on:
+      # NOTE: no health gate on kafka-1 here. In KRaft, kafka-1 cannot become
+      # "healthy" until a controller quorum exists (2 of 3 voters), so gating
+      # kafka-2/kafka-3 on kafka-1's health deadlocks the whole cluster.
+      # All three start together; quorum forms once any two are up.
       kafka-1:
-        condition: service_healthy
+        condition: service_started
 
   kafka-3:
     image: apache/kafka:3.9.0
     container_name: eventpulse-kafka-3
     hostname: kafka-3
     environment:
-      CLUSTER_ID: eventpulse-kraft-cluster
+      CLUSTER_ID: aa7a92e9-fa4f-4669-b729-56c25a1c1d18
       KAFKA_NODE_ID: 3
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:29093,2@kafka-2:29093,3@kafka-3:29093
@@ -106,8 +110,9 @@ services:
       timeout: 5s
       retries: 12
     depends_on:
+      # Same as kafka-2: start together, no health gate (see note above).
       kafka-1:
-        condition: service_healthy
+        condition: service_started
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.8.0

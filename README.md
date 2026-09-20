@@ -136,6 +136,14 @@ about the small stuff:
   Caught in code review; fixed by calling `setTransactionIdPrefix()` explicitly.
   Lesson: verify `producerFactory.transactionCapable()` in a startup check, don't
   trust the yml.
+- **KRaft wouldn't start: two bugs.** (1) `CLUSTER_ID: eventpulse-kraft-cluster`
+  is not a valid UUID, so `kafka-storage.sh format` exited 1 on every broker —
+  caught by the CI integration job, fixed with a real UUID. (2) kafka-2/kafka-3
+  waited for kafka-1 to be *healthy*, but a KRaft node can't pass its healthcheck
+  until a controller quorum exists (2 of 3 voters) — a startup deadlock.
+  Fixed by gating the followers on `service_started`, not `service_healthy`.
+  Lesson: KRaft quorum formation and Docker health gates interact badly; the
+  followers must start *together* with the first node.
 - **Secret redaction corrupted docker-compose.yml.** The sandbox's secret scanner
   rewrote the `POSTGRES_PASSWORD` line and dropped its indentation, producing
   invalid YAML. Fixed by removing passwords from the repo entirely (Postgres
