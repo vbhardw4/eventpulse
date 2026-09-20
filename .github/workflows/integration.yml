@@ -142,10 +142,15 @@ jobs:
           du = s2['consumedUnique'] - s1['consumedUnique']
           dt = s2['consumed'] - s1['consumed']
           print(f"window: produced+{dp} transport-consumed+{dt} unique-consumed+{du}")
-          # Zero loss AND no duplicates across the kill window.
+          # Zero LOSS across the kill. Note the assertion is one-sided on purpose:
+          # if the kill lands exactly inside a commit RPC, the producer can't know
+          # the outcome and doesn't count the batch, while the (committed) records
+          # are still consumed -- that shows up as du slightly ABOVE dp and is not
+          # loss. Tolerance covers ~2 batches at the steady 5/sec rate.
           assert dp > 0, "simulator produced nothing during the window"
-          assert dt == dp, f"TRANSPORT LOSS: produced+{dp} but consumed+{dt}"
-          assert du == dp, f"BUSINESS LOSS/DUPES: produced+{dp} but unique+{du}"
+          assert dt >= dp, f"TRANSPORT LOSS: produced+{dp} but consumed+{dt}"
+          assert du >= dp, f"BUSINESS LOSS: produced+{dp} but unique-consumed+{du}"
+          assert du - dp <= 10, f"SUSPICIOUS: unique-consumed exceeds produced by {du - dp}"
           print("BROKER_KILL_RESULT zero-loss across broker kill: PASS")
           EOF
 
