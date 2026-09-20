@@ -19,9 +19,20 @@
 
     <properties>
         <java.version>21</java.version>
-        <confluent.version>7.8.0</confluent.version>
+        <!-- Pin Kafka clients to the broker version in docker-compose.yml -->
+        <kafka.version>3.9.0</kafka.version>
+        <!-- Confluent 7.9 pairs with Kafka 3.9 -->
+        <confluent.version>7.9.0</confluent.version>
         <avro.version>1.11.4</avro.version>
     </properties>
+
+    <repositories>
+        <!-- Confluent artifacts are NOT on Maven Central -->
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
 
     <dependencies>
         <dependency>
