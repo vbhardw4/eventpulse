@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.apache.kafka.clients.admin.AdminClient;
@@ -102,7 +103,7 @@ public class LagReporter {
             Map<TopicPartition, OffsetAndMetadata> committed = admin
                     .listConsumerGroupOffsets(groupId)
                     .partitionsToOffsetAndMetadata()
-                    .get(Duration.ofSeconds(10));
+                    .get(10, TimeUnit.SECONDS);
 
             for (TopicPartition tp : tps) {
                 Long end = endOffsets.get(tp);
