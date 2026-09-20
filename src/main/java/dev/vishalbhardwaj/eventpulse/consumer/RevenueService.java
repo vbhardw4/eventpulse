@@ -43,7 +43,7 @@ public class RevenueService {
      * @return {@code true} if the order was applied, {@code false} if it was a
      *         duplicate and skipped.
      */
-    @Transactional
+    @Transactional("transactionManager")
     public boolean applyIfNew(String topic, int partition, long offset, OrderEvent event) {
         int inserted = processedOrders.insertIgnore(
                 event.getOrderId(), topic, partition, offset);

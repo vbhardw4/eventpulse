@@ -54,7 +54,7 @@ public class DlqController {
     }
 
     @PostMapping("/replay")
-    @Transactional
+    @Transactional("transactionManager")
     public Map<String, Object> replayAll() {
         List<DlqMessage> pending = dlqMessages.findByReplayedFalseOrderByReceivedAtDesc();
         int replayed = 0;

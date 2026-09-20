@@ -38,7 +38,7 @@ public class DlqConsumer {
     @KafkaListener(id = "dlq-consumer",
             topics = "${eventpulse.topics.dlq}",
             containerFactory = "dlqListenerContainerFactory")
-    @Transactional
+    @Transactional("transactionManager")
     public void listen(ConsumerRecord<String, byte[]> record) {
         String exceptionMessage = headerAsString(record, KafkaHeaders.DLT_EXCEPTION_MESSAGE);
         if (exceptionMessage == null) {
