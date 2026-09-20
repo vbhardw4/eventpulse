@@ -1,0 +1,22 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+
+  - name: Postgres
+    uid: Postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: eventpulse
+    user: eventpulse
+    secureJsonData:
+      password: eventpulse
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 5

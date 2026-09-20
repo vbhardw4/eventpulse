@@ -1,0 +1,88 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: eventpulse
+  datasource:
+    url: ${EVENTPULSE_DB_URL:jdbc:postgresql://localhost:5432/eventpulse}
+    username: ${EVENTPULSE_DB_USER:eventpulse}
+    password: ${EVENTPULSE_DB_PASSWORD:eventpulse}
+    hikari:
+      maximum-pool-size: 10
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        format_sql: false
+  data:
+    redis:
+      host: ${EVENTPULSE_REDIS_HOST:localhost}
+      port: ${EVENTPULSE_REDIS_PORT:6379}
+  kafka:
+    bootstrap-servers: ${EVENTPULSE_KAFKA_BOOTSTRAP:localhost:9092,localhost:9093,localhost:9094}
+    properties:
+      schema.registry.url: ${EVENTPULSE_SCHEMA_REGISTRY:http://localhost:8081}
+    producer:
+      # Transactional producer: idempotence + atomic multi-partition writes.
+      # This is one half of real exactly-once; the other half is the idempotent
+      # consumer (dedupe table) + read_committed below.
+      transaction-id-prefix: eventpulse-tx-
+      acks: all
+      retries: 2147483647
+      max-in-flight-requests-per-connection: 5
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+    consumer:
+      group-id: eventpulse-orders
+      # Never read uncommitted (aborted) transactional messages.
+      isolation-level: read_committed
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      max-poll-records: 500
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Wrap the Avro deserializer so poison records become handleable errors
+      # (with headers) instead of killing the poll loop — the error handler
+      # routes them to the DLQ topic.
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      properties:
+        spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
+        specific.avro.reader: true
+    listener:
+      ack-mode: manual_immediate
+      concurrency: 3
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  metrics:
+    tags:
+      application: eventpulse
+
+eventpulse:
+  topics:
+    orders: orders
+    dlq: orders.dlq
+    orders-partitions: 12
+    dlq-partitions: 3
+    replication-factor: 3
+    min-insync-replicas: 2
+  simulator:
+    enabled: ${EVENTPULSE_SIMULATOR_ENABLED:true}
+    rate-per-second: ${EVENTPULSE_SIMULATOR_RATE:200}
+    schema-version: v1 # v1 | v2 — flip at runtime via POST /api/demo/schema-version/v2
+  consumer:
+    lag-alert-threshold: 5000
+  load:
+    enabled: false
+    count: 600000
+    rate-per-second: 10000
+    drain-timeout-seconds: 300
+
+logging:
+  level:
+    dev.vishalbhardwaj.eventpulse: INFO
+    org.springframework.kafka: WARN

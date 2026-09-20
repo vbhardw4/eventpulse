@@ -1,0 +1,5 @@
+# Active only with --spring.profiles.active=load: the steady simulator is off so the
+# load-test numbers are clean.
+eventpulse:
+  simulator:
+    enabled: false

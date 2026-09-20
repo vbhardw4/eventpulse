@@ -1,0 +1,38 @@
+# Alert rules evaluated by Prometheus. Delivery (PagerDuty/OpsGenie/Slack) needs an
+# Alertmanager wired to these rules — see docs/runbook.md. The app also logs
+# LAG ALERT lines and bumps eventpulse_consumer_lag_alerts_total immediately.
+groups:
+  - name: eventpulse
+    interval: 15s
+    rules:
+      - alert: ConsumerLagHigh
+        expr: max(eventpulse_consumer_lag) > 5000
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "EventPulse consumer lag above 5,000 on partition {{ $labels.partition }}"
+
+      - alert: ConsumerLagCritical
+        expr: max(eventpulse_consumer_lag) > 50000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "EventPulse consumer lag above 50,000 — consumer may be down"
+
+      - alert: DlqGrowing
+        expr: increase(eventpulse_dlq_received_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Records are landing in the dead-letter queue — inspect /api/dlq/pending"
+
+      - alert: E2ELatencyP99High
+        expr: histogram_quantile(0.99, sum(rate(eventpulse_e2e_latency_seconds_bucket[5m])) by (le)) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "EventPulse end-to-end p99 latency above 2s"
