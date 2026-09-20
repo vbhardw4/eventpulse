@@ -13,6 +13,7 @@ import org.springframework.data.redis.core.RedisOperations;
 import org.springframework.data.redis.core.SessionCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
+import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -65,24 +66,32 @@ public class RevenueService {
             return List.of();
         }
 
-        // 1. Bulk idempotent insert. batchUpdate returns per-row counts:
+        // 1. Bulk idempotent insert. batchUpdate returns per-statement counts:
         //    1 = first sight of this orderId, 0 = duplicate (ON CONFLICT DO NOTHING).
-        int[][] counts = jdbc.batchUpdate(
+        int[] counts = jdbc.batchUpdate(
                 "INSERT INTO processed_orders(order_id, topic, record_partition, record_offset, processed_at)"
                         + " VALUES (?,?,?,?,now()) ON CONFLICT (order_id) DO NOTHING",
-                pending, pending.size(),
-                (ps, p) -> {
-                    ps.setString(1, p.event().getOrderId());
-                    ps.setString(2, p.topic());
-                    ps.setInt(3, p.partition());
-                    ps.setLong(4, p.offset());
+                new BatchPreparedStatementSetter() {
+                    @Override
+                    public void setValues(java.sql.PreparedStatement ps, int i) throws java.sql.SQLException {
+                        PendingOrder p = pending.get(i);
+                        ps.setString(1, p.event().getOrderId());
+                        ps.setString(2, p.topic());
+                        ps.setInt(3, p.partition());
+                        ps.setLong(4, p.offset());
+                    }
+
+                    @Override
+                    public int getBatchSize() {
+                        return pending.size();
+                    }
                 });
 
         // 2. Aggregate the newly-seen orders per minute bucket, then bulk upsert.
         Map<LocalDateTime, long[]> byMinute = new HashMap<>();
         List<OrderEvent> applied = new ArrayList<>();
         for (int i = 0; i < pending.size(); i++) {
-            if (counts[i][0] == 1) {
+            if (counts[i] == 1) {
                 OrderEvent e = pending.get(i).event();
                 applied.add(e);
                 long[] agg = byMinute.computeIfAbsent(
