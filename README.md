@@ -98,18 +98,34 @@ Stated precisely, because hand-waving here is how data gets duplicated:
   this is the pattern production Kafka-to-DB pipelines actually use, because Kafka
   transactions alone only cover Kafka-to-Kafka topologies.
 
-## Performance
+## Performance — measured, not projected
 
-> **Honest labeling:** the numbers below are *targets* until measured. They were not
-> measured in the build environment (no Docker there). Measure on your hardware with
-> `./scripts/measure.sh` and replace this table — that is the procedure, not a claim.
+> Measured 2026-09-20 in GitHub Actions (`Integration` workflow, run 35513823251,
+> commit `16261ce5`): 3× Kafka 3.9 KRaft brokers, Schema Registry, Postgres 17,
+> Redis 7, Spring Boot app — all on the standard GitHub-hosted runner.
+> Reproduce with `./scripts/run-app.sh --load` (30k events @ 2.5k/sec target).
 
-| Metric | Target | How it's measured |
-|--------|--------|-------------------|
-| Sustained throughput | ~10k events/sec | `./scripts/measure.sh 600000 10000` — produce+drain |
-| End-to-end p99 latency | < 300 ms | `producedAt` → consume timestamp, printed percentile report + Grafana |
-| Message loss across broker kill | zero | `produced` vs `consumedUnique` in `GET /api/demo/stats` |
-| Lag recovery after broker restart | < 60 s | Grafana "Consumer lag by partition" panel |
+| Metric | Measured | How |
+|--------|----------|-----|
+| Sustained throughput | **1,795 events/sec** (produce+drain); producer hit 2,188/sec | `LoadRunner`: 30,000 events, drain to idle |
+| End-to-end latency | p50 **247 ms**, p95 **1,823 ms**, p99 **2,850 ms**, max 4,093 ms | `producedAt` → DB-commit timestamp, n=30,000 |
+| Message loss (load) | **zero** — 30,000 / 30,000 consumed, 30,000 unique | `produced` vs `consumed` vs `consumedUnique` |
+| Message loss across broker kill | **zero** — 18,200 / 18,200 / 18,200 | broker killed mid-stream, 90 s window, then drain |
+| Consumer design | batch (6 threads × ≤500 records): 2 PG round trips + 1 Redis pipeline per batch | `RevenueService.applyBatch` |
+
+Notes on reading these numbers honestly:
+
+- The p99 (2.85 s) is **queueing delay**, not processing time: the burst producer
+  (2,188/sec) temporarily outruns the consumer, so tail events wait in Kafka.
+  Median processing latency is 247 ms. Sizing the consumer with more headroom
+  (or a lower sustained produce rate) drops the tail — the pipeline itself
+  applies each batch in ~2 Postgres round trips.
+- "Zero loss" means every produced event was consumed **and** applied exactly
+  once at the business level (`consumedUnique == produced`). Duplicates from
+  redelivery are absorbed by the `orderId` dedupe table, not counted as loss.
+- The broker-kill drill kills one of three brokers mid-stream and asserts
+  `transport-consumed ≥ produced` and `unique-consumed ≥ produced` over the
+  failure window — it passed with exact equality (18,200 / 18,200 / 18,200).
 
 ## What broke and how I fixed it (build log)
 
@@ -153,6 +169,33 @@ about the small stuff:
 - **No local Docker in the build sandbox.** Compile + unit tests run in GitHub
   Actions; throughput/latency numbers are therefore marked as targets above until
   measured on real hardware via `scripts/measure.sh`.
+- **Two transaction managers, one `@Transactional`.** Adding a transactional
+  producer factory made Boot create a `kafkaTransactionManager` bean alongside
+  the JPA `transactionManager`. The consumer's `@Transactional` couldn't choose
+  and threw `NoUniqueBeanDefinitionException` on *every* record — the error
+  handler retried the same batch forever (consumed 1,390, unique 0). Fixed by
+  qualifying every `@Transactional("transactionManager")`. Lesson: the failure
+  mode for ambiguous transaction managers isn't a startup error, it's a
+  per-record runtime exception inside the listener.
+- **Per-record JPA topped out at ~95 events/sec.** Four round trips per record
+  (dedupe check, insert, revenue upsert, Redis) couldn't keep up with a
+  2,500/sec burst — 30k events took 5 minutes to drain. Rewrote the consumer as
+  a batch listener: one poll batch becomes two Postgres `batchUpdate` calls +
+  one Redis pipeline in a single transaction. Throughput went 95 → 1,795/sec.
+  Lesson: the standard Kafka-to-DB pattern is batch-apply with business-key
+  dedupe, not per-record JPA.
+- **Lag never reaches zero with a transactional producer.** The load test's
+  drain wait used `log-end-offset − committed-offset == 0`, but each transaction
+  leaves a commit marker at the partition end that is never "committed" — lag
+  sits at ~1 per partition forever and the test timed out at 300 s every run.
+  Fixed by waiting on consumed-counter *stability* instead of broker lag.
+  Lesson: lag is a monitoring signal, not a drain signal, when transactions are
+  in play.
+- **`int[][]` vs `int[]` from `JdbcTemplate.batchUpdate`.** The collection-based
+  overload returns `int[][]` (per-chunk arrays); indexing it as `counts[i][0]`
+  threw `ArrayIndexOutOfBoundsException` on every batch. Switched to the
+  `BatchPreparedStatementSetter` overload which returns a flat `int[]`.
+  Lesson: read the return-type Javadoc, don't guess from the name.
 
 ## Cost framing — what this replaces
 
