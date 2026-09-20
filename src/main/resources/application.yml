@@ -42,12 +42,11 @@ spring:
       auto-offset-reset: earliest
       max-poll-records: 500
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      # Wrap the Avro deserializer so poison records become handleable errors
-      # (with headers) instead of killing the poll loop — the error handler
-      # routes them to the DLQ topic.
-      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
+      # Poison-tolerant Avro deserializer: malformed bytes become a PoisonRecord
+      # value (raw bytes preserved) instead of failing the poll — the batch
+      # listener quarantines them to the DLQ and keeps processing the batch.
+      value-deserializer: dev.vishalbhardwaj.eventpulse.consumer.PoisonTolerantAvroDeserializer
       properties:
-        spring.deserializer.value.delegate.class: io.confluent.kafka.serializers.KafkaAvroDeserializer
         specific.avro.reader: true
     listener:
       ack-mode: manual_immediate

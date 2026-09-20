@@ -122,25 +122,40 @@ public class KafkaConfig {
     }
 
     /**
-     * Main listener factory: manual acks + DLQ routing for poison records.
-     * Deserialization failures are NOT retried (they would fail forever) —
-     * they go straight to {@code orders.dlq} with the original raw bytes.
+     * Shared DLQ publisher: routes a failed record (with its original raw
+     * bytes) to the DLQ topic with the standard DLT headers, so the DLQ
+     * inspector sees the same envelope whether the failure came from the
+     * batch listener's poison path or the error handler's recoverer.
+     */
+    @Bean
+    public DeadLetterPublishingRecoverer dlqRecoverer(
+            KafkaTemplate<String, byte[]> rawKafkaTemplate) {
+        return new DeadLetterPublishingRecoverer(rawKafkaTemplate,
+                (record, ex) -> new org.apache.kafka.common.TopicPartition(
+                        props.topics().dlq(),
+                        Math.abs(record.partition() % props.topics().dlqPartitions())));
+    }
+
+    /**
+     * Main listener factory: batch mode, manual acks, DLQ routing.
+     *
+     * <p>Batch mode is the throughput story: one poll batch becomes two
+     * Postgres round trips + one Redis pipeline (see {@code RevenueService}),
+     * instead of ~7 round trips per record. Poison records are converted to
+     * data by the value deserializer and quarantined by the listener itself —
+     * deserialization can no longer fail (or wedge) the poll.
      */
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(
             ConsumerFactory<String, Object> orderConsumerFactory,
-            KafkaTemplate<String, byte[]> rawKafkaTemplate) {
+            DeadLetterPublishingRecoverer dlqRecoverer) {
         var factory = new ConcurrentKafkaListenerContainerFactory<String, Object>();
         factory.setConsumerFactory(orderConsumerFactory);
+        factory.setBatchListener(true);
         factory.getContainerProperties().setAckMode(ContainerProperties.AckMode.MANUAL_IMMEDIATE);
         factory.setConcurrency(3);
 
-        var recoverer = new DeadLetterPublishingRecoverer(rawKafkaTemplate,
-                (record, ex) -> new org.apache.kafka.common.TopicPartition(
-                        props.topics().dlq(),
-                        Math.abs(record.partition() % props.topics().dlqPartitions())));
-
-        var errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(1_000L, 2L));
+        var errorHandler = new DefaultErrorHandler(dlqRecoverer, new FixedBackOff(1_000L, 2L));
         errorHandler.addNotRetryableExceptions(
                 DeserializationException.class,
                 org.apache.kafka.common.errors.SerializationException.class);

@@ -31,12 +31,20 @@ public class PipelineStats {
     }
 
     public void incrementConsumed() {
-        consumed.incrementAndGet();
-        consumedCounter.increment();
+        incrementConsumed(1);
+    }
+
+    public void incrementConsumed(long n) {
+        consumed.addAndGet(n);
+        consumedCounter.increment(n);
     }
 
     public void incrementConsumedUnique() {
-        consumedUnique.incrementAndGet();
+        incrementConsumedUnique(1);
+    }
+
+    public void incrementConsumedUnique(long n) {
+        consumedUnique.addAndGet(n);
     }
 
     public long produced() { return produced.get(); }

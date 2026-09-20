@@ -140,15 +140,23 @@ jobs:
           echo "==> 90s across the failure..."
           sleep 90
           echo "==> waiting for transport drain (consumed == produced)..."
+          # The drain snapshot IS s2: a single consistent stats read taken at the
+          # moment lag hits zero, so there is no trailing-edge race between the
+          # drain check and the final measurement.
+          DRAINED=""
           for i in $(seq 1 24); do
             S=$(curl -s http://localhost:8080/api/demo/stats)
             P=$(echo "$S" | python3 -c "import json,sys; print(json.load(sys.stdin)['produced'])")
             C=$(echo "$S" | python3 -c "import json,sys; print(json.load(sys.stdin)['consumed'])")
             echo "produced=$P consumed=$C"
-            if [ "$C" -ge "$P" ] && [ "$P" -gt 0 ]; then break; fi
+            if [ "$C" -ge "$P" ] && [ "$P" -gt 0 ]; then
+              echo "$S" > /tmp/s2.json
+              DRAINED=1
+              break
+            fi
             sleep 5
           done
-          curl -sf http://localhost:8080/api/demo/stats | tee /tmp/s2.json
+          [ -n "$DRAINED" ] || { echo "DRAIN TIMEOUT: consumer never caught up"; exit 1; }
           echo
           python3 - <<'EOF'
           import json, sys
@@ -158,16 +166,20 @@ jobs:
           du = s2['consumedUnique'] - s1['consumedUnique']
           dt = s2['consumed'] - s1['consumed']
           print(f"window: produced+{dp} transport-consumed+{dt} unique-consumed+{du}")
-          # Zero LOSS across the kill. Note the assertion is one-sided on purpose:
-          # if the kill lands exactly inside a commit RPC, the producer can't know
-          # the outcome and doesn't count the batch, while the (committed) records
-          # are still consumed -- that shows up as du slightly ABOVE dp and is not
-          # loss. Tolerance covers ~2 batches at the steady 5/sec rate.
+          # Zero LOSS across the kill. s2 is the drain snapshot (lag == 0), so
+          # every produced event in the window was consumed: dt >= dp proves
+          # zero transport loss, du >= dp proves zero business loss. The
+          # one-sided tolerance covers the case where the kill lands inside a
+          # producer commit RPC: the batch is committed but not counted, so du
+          # can sit slightly ABOVE dp — that is not loss.
           assert dp > 0, "simulator produced nothing during the window"
           assert dt >= dp, f"TRANSPORT LOSS: produced+{dp} but consumed+{dt}"
           assert du >= dp, f"BUSINESS LOSS: produced+{dp} but unique-consumed+{du}"
           assert du - dp <= 10, f"SUSPICIOUS: unique-consumed exceeds produced by {du - dp}"
           print("BROKER_KILL_RESULT zero-loss across broker kill: PASS")
+          open("/tmp/broker_kill_result.txt", "w").write(
+              f"window: produced+{dp} transport-consumed+{dt} unique-consumed+{du}\n"
+              "BROKER_KILL_RESULT zero-loss across broker kill: PASS\n")
           EOF
 
       - name: Publish results
@@ -175,7 +187,7 @@ jobs:
         run: |
           echo "### Broker-kill drill" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-          grep -E "BROKER_KILL_RESULT|window:" "$GITHUB_WORKSPACE"/app.log 2>/dev/null || true
+          cat /tmp/broker_kill_result.txt 2>/dev/null || echo "(no result — step did not complete)"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Tear down
