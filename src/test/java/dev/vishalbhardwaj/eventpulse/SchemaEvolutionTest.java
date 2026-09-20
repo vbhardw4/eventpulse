@@ -33,9 +33,10 @@ class SchemaEvolutionTest {
         SchemaCompatibility.SchemaPairCompatibility result =
                 SchemaCompatibility.checkReaderWriterCompatibility(reader, writer);
 
-        assertEquals(SchemaCompatibility.SchemaCompatibilityResult.COMPATIBLE,
-                result.getResult(),
-                "v2 reader must stay BACKWARD compatible with v1, got: " + result.getResult());
+        assertEquals(SchemaCompatibility.SchemaCompatibilityType.COMPATIBLE,
+                result.getResult().getCompatibility(),
+                "v2 reader must stay BACKWARD compatible with v1, got: "
+                        + result.getResult().getIncompatibilities());
     }
 
     @Test
