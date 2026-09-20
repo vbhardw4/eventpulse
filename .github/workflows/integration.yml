@@ -1,0 +1,164 @@
+name: Integration
+
+# End-to-end proof on every push to main: real Kafka + Postgres + Redis on the
+# runner's Docker, a paced load test asserting zero loss, and a broker-kill
+# chaos drill asserting zero loss across the failure. The numbers printed here
+# are the honest measured figures quoted in the README.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  load-test:
+    name: Load test (zero loss, latency)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Maven repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('pom.xml') }}
+          restore-keys: maven-
+
+      - name: Start infrastructure
+        run: docker compose up -d kafka-1 kafka-2 kafka-3 schema-registry postgres redis
+
+      - name: Wait for Schema Registry
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8081/subjects >/dev/null; then
+              echo "schema-registry up"; break
+            fi
+            sleep 5
+          done
+          curl -sf http://localhost:8081/subjects >/dev/null
+
+      - name: Build
+        run: mvn -B -DskipTests package
+
+      - name: Run paced load test (30k events @ 2.5k/sec)
+        run: |
+          set -o pipefail
+          java -jar target/eventpulse-0.1.0.jar \
+            --spring.profiles.active=load \
+            --eventpulse.load.count=30000 \
+            --eventpulse.load.rate-per-second=2500 2>&1 | tee load.log
+
+      - name: Publish results
+        if: always()
+        run: |
+          grep -E "LOAD_RESULT|lost messages" load.log || true
+          echo "### Load test" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep "LOAD_RESULT" load.log >> "$GITHUB_STEP_SUMMARY" || echo "no LOAD_RESULT line" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  broker-kill:
+    name: Broker-kill drill (zero loss across failure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Maven repository
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('pom.xml') }}
+          restore-keys: maven-
+
+      - name: Start infrastructure
+        run: docker compose up -d kafka-1 kafka-2 kafka-3 schema-registry postgres redis
+
+      - name: Wait for Schema Registry
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8081/subjects >/dev/null; then
+              echo "schema-registry up"; break
+            fi
+            sleep 5
+          done
+          curl -sf http://localhost:8081/subjects >/dev/null
+
+      - name: Build
+        run: mvn -B -DskipTests package
+
+      - name: Start app (demo profile, steady simulator)
+        run: |
+          nohup java -jar target/eventpulse-0.1.0.jar > app.log 2>&1 &
+          echo $! > app.pid
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8080/actuator/health >/dev/null; then
+              echo "app up"; break
+            fi
+            sleep 5
+          done
+          curl -sf http://localhost:8080/actuator/health
+
+      - name: Baseline, kill a broker, measure across the failure
+        run: |
+          echo "==> steady state 60s..."
+          sleep 60
+          curl -sf http://localhost:8080/api/demo/stats | tee /tmp/s1.json
+          echo
+          echo "==> killing eventpulse-kafka-2..."
+          docker kill eventpulse-kafka-2
+          echo "==> 90s across the failure..."
+          sleep 90
+          echo "==> waiting for transport drain (consumed == produced)..."
+          for i in $(seq 1 24); do
+            S=$(curl -s http://localhost:8080/api/demo/stats)
+            P=$(echo "$S" | python3 -c "import json,sys; print(json.load(sys.stdin)['produced'])")
+            C=$(echo "$S" | python3 -c "import json,sys; print(json.load(sys.stdin)['consumed'])")
+            echo "produced=$P consumed=$C"
+            if [ "$C" -ge "$P" ] && [ "$P" -gt 0 ]; then break; fi
+            sleep 5
+          done
+          curl -sf http://localhost:8080/api/demo/stats | tee /tmp/s2.json
+          echo
+          python3 - <<'EOF'
+          import json, sys
+          s1 = json.load(open('/tmp/s1.json'))
+          s2 = json.load(open('/tmp/s2.json'))
+          dp = s2['produced'] - s1['produced']
+          du = s2['consumedUnique'] - s1['consumedUnique']
+          dt = s2['consumed'] - s1['consumed']
+          print(f"window: produced+{dp} transport-consumed+{dt} unique-consumed+{du}")
+          # Zero loss AND no duplicates across the kill window.
+          assert dp > 0, "simulator produced nothing during the window"
+          assert dt == dp, f"TRANSPORT LOSS: produced+{dp} but consumed+{dt}"
+          assert du == dp, f"BUSINESS LOSS/DUPES: produced+{dp} but unique+{du}"
+          print("BROKER_KILL_RESULT zero-loss across broker kill: PASS")
+          EOF
+
+      - name: Publish results
+        if: always()
+        run: |
+          echo "### Broker-kill drill" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep -E "BROKER_KILL_RESULT|window:" "$GITHUB_WORKSPACE"/app.log 2>/dev/null || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tear down
+        if: always()
+        run: |
+          kill "$(cat app.pid)" 2>/dev/null || true
+          docker compose down -v

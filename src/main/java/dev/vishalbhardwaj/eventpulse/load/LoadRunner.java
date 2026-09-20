@@ -97,6 +97,10 @@ public class LoadRunner implements ApplicationRunner {
         System.out.printf("lost messages   : %,d %s%n", lost, lost == 0 ? "(ZERO LOSS)" : "(!!! INVESTIGATE)");
         System.out.println("===================================");
         System.out.println();
+        // Machine-parseable line for CI.
+        System.out.printf("LOAD_RESULT produced=%d consumed=%d unique=%d lost=%d rate=%d achieved=%.0f p50=%d p95=%d p99=%d max=%d%n",
+                stats.produced(), stats.consumed(), stats.consumedUnique(), lost, rate, achievedPerSec,
+                snap.p50Ms(), snap.p95Ms(), snap.p99Ms(), snap.maxMs());
 
         int exitCode = SpringApplication.exit(context, () -> lost == 0 ? 0 : 1);
         System.exit(exitCode);
