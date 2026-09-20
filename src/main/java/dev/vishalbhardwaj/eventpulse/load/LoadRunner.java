@@ -10,7 +10,6 @@ import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 import dev.vishalbhardwaj.eventpulse.config.EventPulseProperties;
-import dev.vishalbhardwaj.eventpulse.metrics.LagReporter;
 import dev.vishalbhardwaj.eventpulse.metrics.LatencyTracker;
 import dev.vishalbhardwaj.eventpulse.metrics.PipelineStats;
 import dev.vishalbhardwaj.eventpulse.producer.OrderSimulator;
@@ -36,20 +35,17 @@ public class LoadRunner implements ApplicationRunner {
     private final OrderSimulator simulator;
     private final PipelineStats stats;
     private final LatencyTracker latencyTracker;
-    private final LagReporter lagReporter;
     private final ApplicationContext context;
 
     public LoadRunner(EventPulseProperties props,
                       OrderSimulator simulator,
                       PipelineStats stats,
                       LatencyTracker latencyTracker,
-                      LagReporter lagReporter,
                       ApplicationContext context) {
         this.props = props;
         this.simulator = simulator;
         this.stats = stats;
         this.latencyTracker = latencyTracker;
-        this.lagReporter = lagReporter;
         this.context = context;
     }
 
@@ -66,12 +62,26 @@ public class LoadRunner implements ApplicationRunner {
         long produceMs = (System.nanoTime() - start) / 1_000_000;
         log.info("Produced {} events in {} ms", count, produceMs);
 
-        // Wait for drain: lag back to zero and all events consumed.
+        // Wait for drain: every produced event has been consumed and the
+        // consumer has gone idle (consumed count stable). We deliberately do
+        // NOT wait on broker lag here: the transactional producer leaves a
+        // commit marker at each partition's log end, so `log-end-offset minus
+        // committed-offset` never returns to zero even when fully caught up.
+        // Stability of the consumed counter is the correct drain signal.
         long deadline = System.currentTimeMillis() + drainTimeoutMs;
+        long lastConsumed = -1;
+        int stableTicks = 0;
         while (System.currentTimeMillis() < deadline) {
-            if (lagReporter.totalLag() == 0 && stats.consumed() >= stats.produced()) {
-                break;
+            long c = stats.consumed();
+            long p = stats.produced();
+            if (c >= p && p > 0 && c == lastConsumed) {
+                if (++stableTicks >= 3) {
+                    break;
+                }
+            } else {
+                stableTicks = 0;
             }
+            lastConsumed = c;
             try {
                 Thread.sleep(1000);
             } catch (InterruptedException e) {
